@@ -1,204 +1,37 @@
 import sqlite3
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.io as pio
 import streamlit as st
 
-from sql_tasks import TASKS
 
-# =========================================================
-# THEME (palette, Plotly template, chart helpers, global CSS)
-# =========================================================
-# ---------------------------------------------------------
-# PALETTE
-# ---------------------------------------------------------
-C = {
-    "bg": "#0c1220",
-    "surface": "#131c2e",
-    "surface_2": "#18233a",
-    "border": "#243049",
-    "text": "#f1f5f9",
-    "muted": "#94a3b8",
-    "accent": "#818cf8",     # indigo - primary / close price
-    "up": "#2dd4bf",         # teal  - gains / buy
-    "down": "#fb7185",       # coral - losses / sell
-    "ma20": "#38bdf8",       # sky
-    "ma50": "#fbbf24",       # amber
-}
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 
-# One fixed colour per stock, so a company looks the same on every page
-STOCK_COLORS = {
-    "Bajaj Auto": "#818cf8",
-    "Eicher Motors": "#2dd4bf",
-    "Hero Motocorp": "#fbbf24",
-    "Infosys": "#38bdf8",
-    "TCS": "#f472b6",
-    "TVS Motors": "#fb923c",
-}
-
-FONT = "Manrope, sans-serif"
-
-# ---------------------------------------------------------
-# PLOTLY TEMPLATE
-# ---------------------------------------------------------
-pio.templates["stock_dark"] = go.layout.Template(
-    layout=dict(
-        font=dict(family=FONT, color=C["text"], size=13),
-        title=dict(font=dict(size=16, color=C["text"]), x=0.01),
-        colorway=[C["accent"], C["ma20"], C["ma50"], C["up"], "#f472b6", "#fb923c"],
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(gridcolor="rgba(148,163,184,.08)", zeroline=False,
-                   linecolor=C["border"], tickfont=dict(color=C["muted"])),
-        yaxis=dict(gridcolor="rgba(148,163,184,.10)", zeroline=False,
-                   linecolor=C["border"], tickfont=dict(color=C["muted"])),
-        legend=dict(font=dict(color=C["muted"]), bgcolor="rgba(0,0,0,0)"),
-        hoverlabel=dict(bgcolor=C["surface_2"], bordercolor=C["border"],
-                        font=dict(family=FONT, color=C["text"])),
-    )
+st.set_page_config(
+    page_title="SQL Stock Market Analytics",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
-pio.templates.default = "stock_dark"
 
 
-def signed_colors(values):
-    """Teal for gains, coral for losses - use for bars with +/- values."""
-    return [C["up"] if v >= 0 else C["down"] for v in values]
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "stock_market.db"
+CLEANED_DIR = BASE_DIR / "cleaned_data"
 
 
-def base_chart(fig, height=450):
-    """Same name/signature as before, so existing calls keep working."""
-    fig.update_layout(
-        template="stock_dark",
-        height=height,
-        margin=dict(l=10, r=20, t=60, b=20),
-        hovermode="x unified",
-        bargap=0.35,
-    )
-    # readable data labels on every trace that shows text
-    fig.update_traces(
-        textfont=dict(family=FONT, color=C["text"]),
-        selector=dict(type="bar"),
-    )
-    fig.update_traces(
-        marker=dict(cornerradius=6),
-        selector=dict(type="bar"),
-    )
-    return fig
-
-
-# ---------------------------------------------------------
-# GLOBAL CSS
-# ---------------------------------------------------------
-GLOBAL_CSS = f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
-
-html, body, [class*="css"], .stApp {{ font-family: {FONT}; }}
-.stApp {{
-    background:
-        radial-gradient(900px 400px at 8% -10%, rgba(129,140,248,.14), transparent 60%),
-        radial-gradient(700px 360px at 95% 0%, rgba(45,212,191,.08), transparent 60%),
-        {C['bg']};
-}}
-header[data-testid="stHeader"] {{ background: transparent; }}
-#MainMenu, footer {{ visibility: hidden; }}
-.block-container {{ padding-top: 2.2rem; max-width: 1280px; }}
-
-/* Sidebar */
-[data-testid="stSidebar"] {{
-    background: {C['surface']};
-    border-right: 1px solid {C['border']};
-}}
-[data-testid="stSidebar"] * {{ color: {C['text']}; }}
-[data-testid="stSidebar"] [role="radiogroup"] label {{
-    padding: 9px 12px; border-radius: 10px; margin-bottom: 2px;
-    transition: background .15s;
-}}
-[data-testid="stSidebar"] [role="radiogroup"] label:hover {{ background: {C['surface_2']}; }}
-[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {{
-    background: rgba(129,140,248,.16);
-    box-shadow: inset 3px 0 0 {C['accent']};
-}}
-[data-testid="stSidebar"] [role="radiogroup"] label > div:first-child {{ display: none; }}
-
-/* Headings */
-.main-title {{
-    font-size: 40px; font-weight: 800; letter-spacing: -1.4px; line-height: 1.1;
-    background: linear-gradient(90deg, #f8fafc 30%, {C['accent']});
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    margin-bottom: 6px;
-}}
-.subtitle {{ color: {C['muted']}; font-size: 15px; margin-bottom: 28px; max-width: 70ch; }}
-.section-title {{
-    color: {C['text']}; font-size: 20px; font-weight: 700;
-    margin: 30px 0 14px; padding-left: 12px;
-    border-left: 3px solid {C['accent']};
-}}
-
-/* Metric cards */
-.metric-card {{
-    background: linear-gradient(160deg, {C['surface_2']}, {C['surface']});
-    border: 1px solid {C['border']}; border-radius: 16px;
-    padding: 20px; min-height: 124px;
-    transition: border-color .2s, transform .2s;
-}}
-.metric-card:hover {{ border-color: {C['accent']}; transform: translateY(-2px); }}
-.metric-label {{ color: {C['muted']}; font-size: 13px; font-weight: 600; }}
-.metric-value {{
-    color: {C['text']}; font-size: 28px; font-weight: 800; margin-top: 8px;
-    font-variant-numeric: tabular-nums; letter-spacing: -.5px;
-}}
-.metric-sub {{ color: {C['muted']}; font-size: 12px; margin-top: 6px; }}
-
-/* Insight / recommendation / status cards */
-.insight-card, .recommendation-card, .success-card, .warning-card {{
-    border-radius: 14px; padding: 18px 20px; margin-bottom: 12px;
-    border: 1px solid {C['border']}; border-left-width: 4px;
-}}
-.insight-card {{ background: {C['surface']}; border-left-color: {C['accent']}; }}
-.recommendation-card {{ background: {C['surface_2']}; border-left-color: {C['ma20']}; }}
-.success-card {{ background: rgba(45,212,191,.07); border-color: rgba(45,212,191,.28); border-left-color: {C['up']}; }}
-.warning-card {{ background: rgba(251,191,36,.07); border-color: rgba(251,191,36,.28); border-left-color: {C['ma50']}; margin-top: 12px; }}
-
-.insight-title, .recommendation-title {{ color: {C['text']}; font-size: 15px; font-weight: 700; }}
-.insight-text, .recommendation-text {{ color: #a9b6c9; font-size: 14px; line-height: 1.6; margin-top: 6px; }}
-.success-title {{ color: {C['up']}; font-size: 15px; font-weight: 700; }}
-.success-text {{ color: #9fd8cf; font-size: 14px; line-height: 1.6; margin-top: 6px; }}
-.warning-title {{ color: {C['ma50']}; font-size: 15px; font-weight: 700; }}
-.warning-text {{ color: #d3bf8a; font-size: 14px; line-height: 1.6; margin-top: 6px; }}
-
-/* Streamlit native widgets */
-div[data-testid="stMetric"] {{
-    background: {C['surface']}; border: 1px solid {C['border']};
-    border-radius: 14px; padding: 15px;
-}}
-div[data-baseweb="select"] > div, .stTextArea textarea {{
-    background: {C['surface']} !important; border-color: {C['border']} !important;
-    border-radius: 10px !important;
-}}
-.stTextArea textarea {{ font-size: 14px; }}
-.stButton button[kind="primary"] {{
-    background: {C['accent']}; border: none; border-radius: 10px;
-    color: #0c1220; font-weight: 700;
-}}
-.stButton button[kind="primary"]:hover {{ filter: brightness(1.1); }}
-.stDownloadButton button {{
-    width: 100%; background: {C['surface_2']}; border: 1px solid {C['border']};
-    border-radius: 10px; color: {C['text']};
-}}
-.stDownloadButton button:hover {{ border-color: {C['accent']}; color: {C['accent']}; }}
-[data-testid="stDataFrame"] {{ border: 1px solid {C['border']}; border-radius: 12px; overflow: hidden; }}
-hr {{ border-color: {C['border']}; }}
-</style>
-"""
-
-
-# =========================================================
-# CONFIG
-# =========================================================
-DB = "stock_market.db"
+# ============================================================
+# STOCK CONFIGURATION
+# ============================================================
 
 STOCKS = {
     "bajaj_auto": "Bajaj Auto",
@@ -209,518 +42,1517 @@ STOCKS = {
     "tvs_motors": "TVS Motors",
 }
 
-st.set_page_config(page_title="Stock Market Analytics", page_icon="📈",
-                   layout="wide", initial_sidebar_state="expanded")
-st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+STOCK_LIST = list(STOCKS.keys())
 
 
-# =========================================================
-# DATA
-# =========================================================
-@st.cache_data
-def load_data(table):
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-    conn.close()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date").reset_index(drop=True)
+# ============================================================
+# CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+
+    .main {
+        padding-top: 1rem;
+    }
+
+    .block-container {
+        max-width: 1500px;
+        padding-top: 1.5rem;
+        padding-bottom: 3rem;
+    }
+
+    .hero {
+        padding: 1.5rem 1.8rem;
+        border-radius: 18px;
+        margin-bottom: 1.5rem;
+        background: linear-gradient(
+            135deg,
+            rgba(35, 38, 58, 0.95),
+            rgba(20, 22, 35, 0.98)
+        );
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .hero h1 {
+        margin: 0;
+        font-size: 2.4rem;
+    }
+
+    .hero p {
+        margin-top: 0.5rem;
+        color: #b8bfd3;
+        font-size: 1rem;
+    }
+
+    .metric-card {
+        padding: 1.1rem;
+        border-radius: 14px;
+        background: rgba(35, 38, 58, 0.8);
+        border: 1px solid rgba(255,255,255,0.08);
+        min-height: 120px;
+    }
+
+    .metric-title {
+        color: #aeb6cc;
+        font-size: 0.85rem;
+    }
+
+    .metric-value {
+        font-size: 1.65rem;
+        font-weight: 700;
+        margin-top: 0.35rem;
+    }
+
+    .metric-sub {
+        color: #8d96ad;
+        font-size: 0.78rem;
+        margin-top: 0.3rem;
+    }
+
+    .section-title {
+        font-size: 1.35rem;
+        font-weight: 700;
+        margin-top: 1rem;
+        margin-bottom: 0.7rem;
+    }
+
+    .insight-box {
+        padding: 1rem 1.1rem;
+        border-radius: 12px;
+        background: rgba(35, 38, 58, 0.75);
+        border: 1px solid rgba(255,255,255,0.07);
+        margin-bottom: 0.7rem;
+    }
+
+    .small-muted {
+        color: #929bb0;
+        font-size: 0.85rem;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-def run_sql(sql):
-    conn = sqlite3.connect(DB)
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
+
+def initialize_database():
+    """
+    Create/rebuild SQLite database from cleaned CSV files.
+
+    This is important for Streamlit Cloud because stock_market.db
+    is intentionally excluded from GitHub.
+    """
+
+    conn = sqlite3.connect(DB_PATH)
+
     try:
-        return pd.read_sql_query(sql, conn)
+        for table in STOCK_LIST:
+            csv_path = CLEANED_DIR / f"{table}.csv"
+
+            if not csv_path.exists():
+                st.error(f"Missing cleaned CSV: {csv_path}")
+                continue
+
+            df = pd.read_csv(csv_path)
+
+            df.to_sql(
+                table,
+                conn,
+                if_exists="replace",
+                index=False,
+            )
+
     finally:
         conn.close()
 
 
-def prepare_stock_data(table):
-    df = load_data(table).copy()
-    df["ma20"] = df["close_price"].rolling(20).mean()
-    df["ma50"] = df["close_price"].rolling(50).mean()
-    df["daily_return"] = df["close_price"].pct_change() * 100
-    p20, p50 = df["ma20"].shift(1), df["ma50"].shift(1)
-    df["signal"] = "Hold"
-    df.loc[(p20 <= p50) & (df["ma20"] > df["ma50"]), "signal"] = "Buy"
-    df.loc[(p20 >= p50) & (df["ma20"] < df["ma50"]), "signal"] = "Sell"
+# Always make sure the database exists.
+initialize_database()
+
+
+# ============================================================
+# DATABASE HELPERS
+# ============================================================
+
+def get_connection():
+    return sqlite3.connect(DB_PATH)
+
+
+@st.cache_data
+def load_data(table):
+    """Load one stock table from SQLite."""
+
+    if table not in STOCK_LIST:
+        raise ValueError("Invalid stock table.")
+
+    conn = get_connection()
+
+    try:
+        df = pd.read_sql_query(
+            f"SELECT * FROM {table}",
+            conn,
+        )
+    finally:
+        conn.close()
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
     return df
 
 
+@st.cache_data
+def run_sql(query):
+    conn = get_connection()
+
+    try:
+        return pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
+
+
+def get_table_columns(table):
+    conn = get_connection()
+
+    try:
+        result = pd.read_sql_query(
+            f"PRAGMA table_info({table})",
+            conn,
+        )
+    finally:
+        conn.close()
+
+    return result
+
+
+# ============================================================
+# DATA PREPARATION
+# ============================================================
+
+def prepare_stock_data(table):
+    df = load_data(table).copy()
+
+    if df.empty:
+        return df
+
+    df = df.sort_values("date").reset_index(drop=True)
+
+    # Numeric columns
+    numeric_candidates = [
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "wap",
+        "no.of_shares",
+        "no._of_trades",
+        "total_turnover_(rs.)",
+        "deliverable_quantity",
+        "%_deli._qty_to_traded_qty",
+        "spread_high-low",
+        "spread_close-open",
+        "spread_high_low",
+        "spread_close_open",
+    ]
+
+    for col in numeric_candidates:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce",
+            )
+
+    # Moving averages
+    if "close_price" in df.columns:
+        df["MA20"] = (
+            df["close_price"]
+            .rolling(window=20, min_periods=20)
+            .mean()
+        )
+
+        df["MA50"] = (
+            df["close_price"]
+            .rolling(window=50, min_periods=50)
+            .mean()
+        )
+
+        # Daily return
+        df["Daily Return %"] = (
+            df["close_price"]
+            .pct_change()
+            * 100
+        )
+
+        # Buy / Sell / Hold strategy
+        df["Signal"] = "Hold"
+
+        buy_condition = (
+            (df["MA20"] > df["MA50"])
+            & (df["MA20"].shift(1) <= df["MA50"].shift(1))
+        )
+
+        sell_condition = (
+            (df["MA20"] < df["MA50"])
+            & (df["MA20"].shift(1) >= df["MA50"].shift(1))
+        )
+
+        df.loc[buy_condition, "Signal"] = "Buy"
+        df.loc[sell_condition, "Signal"] = "Sell"
+
+    return df
+
+
+# ============================================================
+# METRICS
+# ============================================================
+
 def calculate_metrics(table):
     df = prepare_stock_data(table)
-    first, last = df["close_price"].iloc[0], df["close_price"].iloc[-1]
-    rets = df["daily_return"].dropna()
-    drawdown = (df["close_price"] / df["close_price"].cummax() - 1) * 100
-    latest = df.iloc[-1]
 
-    if pd.notna(latest["ma20"]) and pd.notna(latest["ma50"]):
-        trend = ("Bullish" if latest["ma20"] > latest["ma50"]
-                 else "Bearish" if latest["ma20"] < latest["ma50"] else "Neutral")
-    else:
-        trend = "Insufficient Data"
+    if df.empty:
+        return {
+            "Stock": STOCKS[table],
+            "Start Price": np.nan,
+            "Latest Price": np.nan,
+            "Return %": np.nan,
+            "Volatility %": np.nan,
+            "High": np.nan,
+            "Low": np.nan,
+            "Buy Signals": 0,
+            "Sell Signals": 0,
+        }
+
+    start_price = df["close_price"].iloc[0]
+    latest_price = df["close_price"].iloc[-1]
+
+    total_return = (
+        (latest_price / start_price) - 1
+    ) * 100
+
+    volatility = (
+        df["Daily Return %"]
+        .std()
+        if "Daily Return %" in df.columns
+        else np.nan
+    )
 
     return {
         "Stock": STOCKS[table],
-        "First Price": first,
-        "Latest Price": last,
-        "Return %": (last - first) / first * 100,
-        "Volatility %": rets.std(),
-        "Positive Days %": (rets > 0).sum() / len(rets) * 100 if len(rets) else 0,
-        "Max Drawdown %": drawdown.min(),
-        "Worst Day %": rets.min(),
-        "Best Day %": rets.max(),
-        "MA20": latest["ma20"],
-        "MA50": latest["ma50"],
-        "Trend": trend,
-        "Buy Signals": (df["signal"] == "Buy").sum(),
-        "Sell Signals": (df["signal"] == "Sell").sum(),
-        "Hold Sessions": (df["signal"] == "Hold").sum(),
+        "Start Price": start_price,
+        "Latest Price": latest_price,
+        "Return %": total_return,
+        "Volatility %": volatility,
+        "High": df["close_price"].max(),
+        "Low": df["close_price"].min(),
+        "Buy Signals": int(
+            (df["Signal"] == "Buy").sum()
+        ),
+        "Sell Signals": int(
+            (df["Signal"] == "Sell").sum()
+        ),
     }
 
 
 @st.cache_data
 def build_comparison():
-    return pd.DataFrame([calculate_metrics(t) for t in STOCKS])
+    return pd.DataFrame(
+        [
+            calculate_metrics(table)
+            for table in STOCK_LIST
+        ]
+    )
 
 
-# =========================================================
-# UI HELPERS
-# =========================================================
-def html(block):
-    st.markdown(block, unsafe_allow_html=True)
+comparison = build_comparison()
 
 
-def page_header(title, subtitle):
-    html(f'<div class="main-title">{title}</div>')
-    html(f'<div class="subtitle">{subtitle}</div>')
-
-
-def section(title):
-    html(f'<div class="section-title">{title}</div>')
-
-
-def metric_card(label, value, sub="", color=None):
-    style = f' style="color:{color}"' if color else ""
-    html(f"""
-    <div class="metric-card">
-        <div class="metric-label">{label}</div>
-        <div class="metric-value"{style}>{value}</div>
-        <div class="metric-sub">{sub}</div>
-    </div>""")
-
-
-def _card(kind, title, text):
-    html(f"""
-    <div class="{kind}-card">
-        <div class="{kind}-title">{title}</div>
-        <div class="{kind}-text">{text}</div>
-    </div>""")
-
-
-def insight(title, text): _card("insight", title, text)
-def recommendation(title, text): _card("recommendation", title, text)
-def warning(title, text): _card("warning", title, text)
-def success(title, text): _card("success", title, text)
-
-
-def show(fig, height=450):
-    st.plotly_chart(base_chart(fig, height), use_container_width=True)
-
-
-def hbar(df, x, title, colors, height=450, right_margin=None):
-    """Horizontal ranked bar chart with coloured bars and data labels."""
-    df = df.sort_values(x, ascending=(x != "Max Drawdown %"))
-    fig = px.bar(df, x=x, y="Stock", orientation="h", text=x, title=title)
-    fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside",
-                      cliponaxis=False,
-                      marker_color=colors(df) if callable(colors) else colors)
-    if right_margin:
-        fig = base_chart(fig, height)
-        fig.update_layout(margin=dict(l=10, r=right_margin, t=60, b=20))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        show(fig, height)
-
-
-def money(v):
-    return f"₹{v:,.2f}"
-
-
-def tint(v):
-    return C["up"] if v >= 0 else C["down"]
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-st.sidebar.markdown("## 📈 Stock Analytics")
-st.sidebar.caption("SQL • Python • Streamlit")
-
-page = st.sidebar.radio("Navigation", [
-    "Overview", "Stock Analysis", "Cross-Stock Insights",
-    "SQL Tasks", "SQL Playground", "Data Explorer",
-])
-
-st.sidebar.divider()
-st.sidebar.markdown("### Dataset")
-for line in ["Period: 2015 – 2018", "Companies: 6", "Records: 5,334", "Database: SQLite"]:
-    st.sidebar.caption(line)
-
-# =========================================================
-# OVERVIEW
-# =========================================================
-if page == "Overview":
-    page_header("Stock Market Analytics",
-                "Business-focused analysis of six Indian stocks using SQL, Python and interactive visual analytics.")
-
-    comparison = build_comparison()
-    best = comparison.loc[comparison["Return %"].idxmax()]
-    lowest_risk = comparison.loc[comparison["Volatility %"].idxmin()]
-    highest_risk = comparison.loc[comparison["Volatility %"].idxmax()]
-    bullish = (comparison["Trend"] == "Bullish").sum()
-    bearish = (comparison["Trend"] == "Bearish").sum()
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: metric_card("Stocks", "6", "Companies analyzed")
-    with c2: metric_card("Best Return", f"{best['Return %']:.2f}%", best["Stock"], C["up"])
-    with c3: metric_card("Lowest Volatility", f"{lowest_risk['Volatility %']:.2f}%", lowest_risk["Stock"], C["ma20"])
-    with c4: metric_card("Bullish Stocks", str(bullish), f"{bearish} currently bearish", C["accent"])
-
-    section("Executive Summary")
-    col1, col2 = st.columns(2)
-    with col1:
-        insight("🏆 Performance Leader",
-                f"{best['Stock']} produced the strongest first-to-last historical return at "
-                f"{best['Return %']:.2f}%, making it the top performer in this dataset on a simple price-return basis.")
-        insight("🛡️ Lower Historical Volatility",
-                f"{lowest_risk['Stock']} recorded the lowest daily-return volatility at "
-                f"{lowest_risk['Volatility %']:.2f}%, a comparatively stable price path within this dataset.")
-    with col2:
-        insight("⚠️ Highest Historical Risk",
-                f"{highest_risk['Stock']} had the highest daily-return volatility at "
-                f"{highest_risk['Volatility %']:.2f}%. Additional risk monitoring would be appropriate.")
-        insight("📊 Market Trend Snapshot",
-                f"{bullish} of the 6 stocks currently have MA20 above MA50, while {bearish} have MA20 below MA50. "
-                "The moving-average structure gives a simple indication of recent trend direction.")
-
-    section("Performance Ranking")
-    hbar(comparison, "Return %", "Historical First-to-Last Return",
-         lambda d: signed_colors(d["Return %"]), right_margin=80)
-
-    section("Return vs Historical Risk")
-    fig = px.scatter(comparison, x="Volatility %", y="Return %", text="Stock",
-                     size="Positive Days %", color="Stock",
-                     color_discrete_map=STOCK_COLORS, hover_name="Stock",
-                     title="Performance vs Daily Volatility")
-    fig.update_traces(textposition="top center", textfont=dict(color=C["text"]))
-    fig.update_xaxes(title="Daily Volatility (%)")
-    fig.update_yaxes(title="Historical Return (%)")
-    fig.update_layout(showlegend=False, hovermode="closest")
-    show(fig, 500)
-
-    section("Data-Driven Recommendations")
-    recommendation("1. Prioritize Trend Confirmation",
-                   "Prefer stocks where MA20 stays above MA50 and avoid treating a single day's move as a signal. "
-                   "A moving-average crossover gives more structured trend confirmation.")
-    recommendation("2. Balance Return With Volatility",
-                   f"{best['Stock']} is the historical performance leader, but return should be judged alongside "
-                   f"volatility and drawdown. {lowest_risk['Stock']} has the lowest daily volatility in this dataset.")
-    recommendation("3. Monitor Drawdowns",
-                   "Stocks with large maximum drawdowns need stronger risk monitoring. Historical returns can hide "
-                   "periods of substantial capital decline.")
-    recommendation("4. Investigate Extreme Daily Moves",
-                   "Large one-day moves should be investigated before drawing conclusions. Corporate actions can "
-                   "create artificial jumps or drops in unadjusted data.")
-    recommendation("5. Use SQL Signals as a Screening Tool",
-                   "The Buy/Sell/Hold crossover logic demonstrates analytical decision rules, but it is a screening "
-                   "framework, not a guaranteed trading strategy.")
-    warning("⚠️ Decision-Making Caveat",
-            "This dashboard uses historical market data and technical indicators. It does not include dividends, "
-            "taxes, brokerage costs, macroeconomic conditions, company fundamentals, news or future market conditions. "
-            "The recommendations are analytical observations for this dataset, not personalized investment advice.")
-
-# =========================================================
-# STOCK ANALYSIS
-# =========================================================
-elif page == "Stock Analysis":
-    page_header("Stock Analysis", "Detailed price, risk, trend and signal analysis.")
-
-    selected = st.selectbox("Select Stock", list(STOCKS.keys()), format_func=lambda x: STOCKS[x])
-    name = STOCKS[selected]
-    df = prepare_stock_data(selected)
-    m = calculate_metrics(selected)
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: metric_card("Latest Close", money(m["Latest Price"]), name)
-    with c2: metric_card("Historical Return", f"{m['Return %']:.2f}%", "First → last close", tint(m["Return %"]))
-    with c3: metric_card("Daily Volatility", f"{m['Volatility %']:.2f}%", "Historical standard deviation", C["ma20"])
-    with c4: metric_card("Max Drawdown", f"{m['Max Drawdown %']:.2f}%", "Peak → trough", C["down"])
-
-    section("Current Trend Assessment")
-    trend_color = {"Bullish": C["up"], "Bearish": C["down"]}.get(m["Trend"])
-    col1, col2, col3 = st.columns(3)
-    with col1: metric_card("Trend", m["Trend"], "MA20 vs MA50", trend_color)
-    with col2: metric_card("MA20", money(m["MA20"]), "20-session average", C["ma20"])
-    with col3: metric_card("MA50", money(m["MA50"]), "50-session average", C["ma50"])
-
-    if m["Trend"] == "Bullish":
-        success("Positive Trend Structure",
-                f"{name} currently has MA20 above MA50, indicating a positive recent trend structure.")
-    elif m["Trend"] == "Bearish":
-        warning("Negative Trend Structure",
-                f"{name} currently has MA20 below MA50, indicating weaker recent momentum.")
-    else:
-        insight("Neutral Trend Structure",
-                f"{name} does not currently show a clear MA20/MA50 directional relationship.")
-
-    section("Price & Moving Averages")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df["date"], y=df["close_price"], mode="lines", name="Close Price",
-                             line=dict(color=C["accent"], width=2),
-                             hovertemplate="Date: %{x}<br>Close: ₹%{y:,.2f}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=df["date"], y=df["ma20"], mode="lines", name="MA20",
-                             line=dict(color=C["ma20"], width=1.6),
-                             hovertemplate="Date: %{x}<br>MA20: ₹%{y:,.2f}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=df["date"], y=df["ma50"], mode="lines", name="MA50",
-                             line=dict(color=C["ma50"], width=1.6),
-                             hovertemplate="Date: %{x}<br>MA50: ₹%{y:,.2f}<extra></extra>"))
-    fig.update_layout(title=f"{name} — Price Trend", xaxis_title="Date", yaxis_title="Price",
-                      legend=dict(orientation="h", y=1.08))
-    show(fig, 520)
-
-    section("Recent Price Data Labels")
-    fig = px.bar(df.tail(20), x="date", y="close_price", text="close_price",
-                 title="Latest 20 Trading Sessions")
-    fig.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside", cliponaxis=False,
-                      textfont=dict(size=10), marker_color=C["accent"])
-    show(fig, 440)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        section("Trading Activity")
-        vol_col = "no.of_shares"
-        if vol_col in df.columns:
-            fig = px.bar(df.tail(30), x="date", y=vol_col, text=vol_col,
-                         title="Trading Volume — Latest 30 Sessions")
-            fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside", cliponaxis=False,
-                              textfont=dict(size=9), marker_color=C["ma20"])
-            show(fig, 440)
-        else:
-            st.info("Trading-share column is not available.")
-    with col2:
-        section("Daily Returns")
-        rets = df.tail(30).dropna(subset=["daily_return"])
-        fig = px.bar(rets, x="date", y="daily_return", text="daily_return",
-                     title="Daily Return — Latest 30 Sessions")
-        fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside", cliponaxis=False,
-                          textfont=dict(size=9), marker_color=signed_colors(rets["daily_return"]))
-        show(fig, 440)
-
-    section("Risk & Stability Analysis")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: metric_card("Positive Days", f"{m['Positive Days %']:.2f}%", "Days with positive close-to-close return", C["up"])
-    with c2: metric_card("Worst Day", f"{m['Worst Day %']:.2f}%", "Largest daily decline", C["down"])
-    with c3: metric_card("Best Day", f"{m['Best Day %']:.2f}%", "Largest daily increase", C["up"])
-    with c4: metric_card("Signal Events", f"{m['Buy Signals'] + m['Sell Signals']:,}", "Buy + Sell crossovers")
-
-    section("Trading Signal Analysis")
-    c1, c2, c3 = st.columns(3)
-    with c1: metric_card("Buy Signals", f"{m['Buy Signals']:,}", color=C["up"])
-    with c2: metric_card("Sell Signals", f"{m['Sell Signals']:,}", color=C["down"])
-    with c3: metric_card("Hold Sessions", f"{m['Hold Sessions']:,}", color=C["muted"])
-
-    sig = df.dropna(subset=["ma20", "ma50"]).tail(150)
-    buys, sells = sig[sig["signal"] == "Buy"], sig[sig["signal"] == "Sell"]
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=sig["date"], y=sig["ma20"], mode="lines", name="MA20",
-                             line=dict(color=C["ma20"], width=2)))
-    fig.add_trace(go.Scatter(x=sig["date"], y=sig["ma50"], mode="lines", name="MA50",
-                             line=dict(color=C["ma50"], width=2)))
-    fig.add_trace(go.Scatter(x=buys["date"], y=buys["ma20"], mode="markers+text",
-                             text=["BUY"] * len(buys), textposition="top center", name="Buy Signal",
-                             textfont=dict(color=C["up"], size=11),
-                             marker=dict(size=13, symbol="triangle-up", color=C["up"],
-                                         line=dict(width=1, color=C["bg"]))))
-    fig.add_trace(go.Scatter(x=sells["date"], y=sells["ma20"], mode="markers+text",
-                             text=["SELL"] * len(sells), textposition="bottom center", name="Sell Signal",
-                             textfont=dict(color=C["down"], size=11),
-                             marker=dict(size=13, symbol="triangle-down", color=C["down"],
-                                         line=dict(width=1, color=C["bg"]))))
-    fig.update_layout(title=f"{name} — Moving Average Signals", xaxis_title="Date",
-                      yaxis_title="Moving Average")
-    show(fig, 500)
-
-    section("Analytical Recommendations")
-    if m["Trend"] == "Bullish":
-        recommendation("Trend Monitoring",
-                       f"{name} currently has a positive MA20/MA50 relationship. Monitor trend continuation "
-                       "rather than relying on the latest closing price alone.")
-    else:
-        recommendation("Momentum Monitoring",
-                       f"{name} does not currently have a bullish MA20/MA50 relationship. Additional confirmation "
-                       "would help before reading recent moves as a sustained positive trend.")
-
-    if m["Volatility %"] > 2:
-        recommendation("Risk Control",
-                       f"Daily volatility is relatively high at {m['Volatility %']:.2f}%. Any analytical strategy "
-                       "should account for larger day-to-day price movements.")
-    else:
-        recommendation("Historical Stability",
-                       f"Daily volatility is {m['Volatility %']:.2f}%, relatively contained within this six-stock "
-                       "comparison, indicating a steadier historical price path.")
-
-    if m["Max Drawdown %"] < -30:
-        recommendation("Drawdown Awareness",
-                       f"The maximum historical drawdown reached {m['Max Drawdown %']:.2f}%. Interpret long-term "
-                       "returns alongside the potential size of historical declines.")
-
-    if m["Worst Day %"] < -10:
-        warning("Extreme Daily Movement",
-                f"The largest daily decline was {m['Worst Day %']:.2f}%. Check for corporate actions or other "
-                "market events before using raw prices for long-term comparisons.")
-
-    st.download_button("⬇ Download Complete Stock Analysis", df.to_csv(index=False),
-                       f"{selected}_analysis.csv", "text/csv")
-
-# =========================================================
-# CROSS-STOCK INSIGHTS
-# =========================================================
-elif page == "Cross-Stock Insights":
-    page_header("Cross-Stock Insights",
-                "Compare performance, risk, drawdown and trend structure across all six companies.")
-
-    comparison = build_comparison()
-
-    section("Analytical Scorecard")
-    display_df = comparison.copy()
-    num_cols = ["First Price", "Latest Price", "Return %", "Volatility %", "Positive Days %",
-                "Max Drawdown %", "Worst Day %", "Best Day %", "MA20", "MA50"]
-    display_df[num_cols] = display_df[num_cols].round(2)
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-    st.download_button("⬇ Download Cross-Stock Scorecard", display_df.to_csv(index=False),
-                       "cross_stock_scorecard.csv", "text/csv")
-
-    section("Historical Return Comparison")
-    hbar(comparison, "Return %", "First-to-Last Return", lambda d: signed_colors(d["Return %"]))
-
-    section("Historical Volatility")
-    hbar(comparison, "Volatility %", "Daily Return Volatility", C["accent"])
-
-    section("Maximum Drawdown")
-    hbar(comparison, "Max Drawdown %", "Historical Peak-to-Trough Drawdown", C["down"])
-
-    best = comparison.loc[comparison["Return %"].idxmax()]
-    worst = comparison.loc[comparison["Return %"].idxmin()]
-    stable = comparison.loc[comparison["Volatility %"].idxmin()]
-    volatile = comparison.loc[comparison["Volatility %"].idxmax()]
-    deepest = comparison.loc[comparison["Max Drawdown %"].idxmin()]
-
-    section("Business Insights")
-    insight("🏆 Return Leadership",
-            f"{best['Stock']} ranks first by historical price return at {best['Return %']:.2f}%, "
-            f"while {worst['Stock']} ranks last at {worst['Return %']:.2f}%.")
-    insight("🛡️ Stability",
-            f"{stable['Stock']} has the lowest daily volatility ({stable['Volatility %']:.2f}%), making it the "
-            "most stable stock in this historical comparison.")
-    insight("⚡ Volatility",
-            f"{volatile['Stock']} has the highest daily volatility ({volatile['Volatility %']:.2f}%). Its return "
-            "should be read together with its higher historical price variability.")
-    insight("📉 Drawdown Risk",
-            f"{deepest['Stock']} experienced the largest maximum drawdown at {deepest['Max Drawdown %']:.2f}%, "
-            "highlighting the importance of evaluating downside risk alongside return.")
-
-    section("Portfolio-Style Analytical Recommendations")
-    recommendation("Balance Growth and Stability",
-                   f"Do not rank stocks by return alone. {best['Stock']} leads on return, while {stable['Stock']} "
-                   "has the lowest historical volatility. Evaluate both before choosing a preferred stock.")
-    recommendation("Investigate Outliers",
-                   "Large differences in return, volatility and drawdown should be investigated using company "
-                   "fundamentals, corporate actions, market events and sector information.")
-    recommendation("Use Multiple Metrics",
-                   "The most useful framework combines return, volatility, maximum drawdown, positive-day ratio "
-                   "and trend structure rather than relying on one KPI.")
-    recommendation("Validate Before Deployment",
-                   "The SQL crossover strategy demonstrates analytical skills, but a production strategy would "
-                   "need backtesting, transaction-cost assumptions and out-of-sample validation.")
-
-# =========================================================
+# ============================================================
 # SQL TASKS
-# =========================================================
+# ============================================================
+
+def task_1():
+    rows = []
+
+    for table, name in STOCKS.items():
+        df = load_data(table)
+
+        rows.append(
+            {
+                "Stock": name,
+                "Rows": len(df),
+                "Start Date": df["date"].min(),
+                "End Date": df["date"].max(),
+                "Min Close": df["close_price"].min(),
+                "Max Close": df["close_price"].max(),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def task_2():
+    df = load_data("eicher_motors")
+
+    return (
+        df[
+            [
+                "date",
+                "close_price",
+            ]
+        ]
+        .sort_values(
+            "close_price",
+            ascending=False,
+        )
+        .head(5)
+    )
+
+
+def task_3():
+    df = load_data("tcs").copy()
+
+    df["Year"] = df["date"].dt.year
+
+    return (
+        df.groupby("Year")["close_price"]
+        .mean()
+        .reset_index(name="Average Close")
+    )
+
+
+def task_4():
+    rows = []
+
+    for table, name in STOCKS.items():
+        df = load_data(table)
+
+        rows.append(
+            {
+                "Stock": name,
+                "NULL Deliverable Quantity": int(
+                    df["deliverable_quantity"].isna().sum()
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def task_5():
+    df = prepare_stock_data("bajaj_auto")
+
+    return df[
+        [
+            "date",
+            "close_price",
+            "MA20",
+            "MA50",
+        ]
+    ].tail(100)
+
+
+def task_6():
+    frames = []
+
+    for table, name in STOCKS.items():
+        df = load_data(table)[
+            [
+                "date",
+                "close_price",
+            ]
+        ].copy()
+
+        df = df.rename(
+            columns={
+                "close_price": f"{table}_close"
+            }
+        )
+
+        frames.append(df)
+
+    master = frames[0]
+
+    for frame in frames[1:]:
+        master = master.merge(
+            frame,
+            on="date",
+            how="outer",
+        )
+
+    return master.sort_values("date")
+
+
+def task_7():
+    frames = []
+
+    for table, name in STOCKS.items():
+        df = prepare_stock_data(table).copy()
+
+        signal_df = df[
+            [
+                "date",
+                "close_price",
+                "MA20",
+                "MA50",
+                "Signal",
+            ]
+        ].copy()
+
+        signal_df.insert(
+            0,
+            "Stock",
+            name,
+        )
+
+        frames.append(signal_df)
+
+    return pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+
+def task_8():
+    signals = task_7()
+
+    return (
+        signals[
+            signals["Signal"].isin(
+                ["Buy", "Sell"]
+            )
+        ]
+        .groupby("Signal")
+        .size()
+        .reset_index(name="Count")
+    )
+
+
+def task_9():
+    signals = task_7()
+
+    return signals[
+        signals["date"]
+        == pd.Timestamp("2018-06-21")
+    ]
+
+
+def task_10():
+    signals = task_7()
+
+    result = (
+        signals[
+            signals["Signal"].isin(
+                ["Buy", "Sell"]
+            )
+        ]
+        .groupby(
+            ["Stock", "Signal"]
+        )
+        .size()
+        .unstack(
+            fill_value=0
+        )
+        .reset_index()
+    )
+
+    return result
+
+
+def task_11():
+    rows = []
+
+    for table, name in STOCKS.items():
+        df = load_data(table)
+
+        first_price = df["close_price"].iloc[0]
+        last_price = df["close_price"].iloc[-1]
+
+        return_pct = (
+            (last_price / first_price) - 1
+        ) * 100
+
+        rows.append(
+            {
+                "Stock": name,
+                "First Close": first_price,
+                "Last Close": last_price,
+                "Return %": return_pct,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def task_12():
+    frames = []
+
+    for table, name in STOCKS.items():
+        df = load_data(table).copy()
+
+        df["Daily Return %"] = (
+            df["close_price"]
+            .pct_change()
+            * 100
+        )
+
+        df["Stock"] = name
+
+        frames.append(
+            df[
+                [
+                    "Stock",
+                    "date",
+                    "close_price",
+                    "Daily Return %",
+                ]
+            ]
+        )
+
+    all_returns = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+    return all_returns.sort_values(
+        "Daily Return %"
+    ).head(10)
+
+
+def task_13():
+    """
+    Corporate-action analysis.
+
+    The student guide identifies large price jumps in
+    TCS and Infosys and describes a 1:1 bonus adjustment,
+    where pre-event prices are divided by 2.
+
+    This function compares original and adjusted
+    first-to-last returns.
+    """
+
+    rows = []
+
+    for table in ["tcs", "infosys"]:
+        df = load_data(table).copy()
+
+        first_price = df["close_price"].iloc[0]
+        last_price = df["close_price"].iloc[-1]
+
+        original_return = (
+            (last_price / first_price) - 1
+        ) * 100
+
+        adjusted = df.copy()
+
+        # Apply 1:1 bonus adjustment to prices
+        # before the identified corporate-action period.
+        if table == "tcs":
+            event_date = pd.Timestamp("2017-06-15")
+        else:
+            event_date = pd.Timestamp("2018-09-01")
+
+        adjusted.loc[
+            adjusted["date"] < event_date,
+            "close_price",
+        ] /= 2
+
+        adjusted_first = adjusted[
+            "close_price"
+        ].iloc[0]
+
+        adjusted_last = adjusted[
+            "close_price"
+        ].iloc[-1]
+
+        adjusted_return = (
+            (adjusted_last / adjusted_first) - 1
+        ) * 100
+
+        rows.append(
+            {
+                "Stock": STOCKS[table],
+                "Original Return %": original_return,
+                "Adjusted Return %": adjusted_return,
+                "Adjustment": "1:1 bonus adjustment",
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.title("📊 Stock Analytics")
+
+page = st.sidebar.radio(
+    "Navigate",
+    [
+        "Overview",
+        "Stock Analysis",
+        "Cross-Stock Insights",
+        "SQL Tasks",
+        "SQL Playground",
+        "Data Explorer",
+    ],
+)
+
+st.sidebar.markdown("---")
+
+st.sidebar.caption(
+    "SQL Stock Market Analytics"
+)
+
+st.sidebar.caption(
+    "2015–2018 historical market analysis"
+)
+
+
+# ============================================================
+# HERO
+# ============================================================
+
+st.markdown(
+    """
+    <div class="hero">
+        <h1>📈 SQL Stock Market Analytics</h1>
+        <p>
+            Data-driven analysis of six Indian stocks using
+            SQL, Python, Pandas and Streamlit.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# OVERVIEW
+# ============================================================
+
+if page == "Overview":
+
+    st.markdown(
+        '<div class="section-title">Portfolio Overview</div>',
+        unsafe_allow_html=True,
+    )
+
+    total_stocks = len(STOCK_LIST)
+
+    best_row = comparison.loc[
+        comparison["Return %"].idxmax()
+    ]
+
+    worst_row = comparison.loc[
+        comparison["Return %"].idxmin()
+    ]
+
+    avg_return = comparison["Return %"].mean()
+
+    avg_volatility = comparison[
+        "Volatility %"
+    ].mean()
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        st.metric(
+            "Stocks Analyzed",
+            total_stocks,
+        )
+
+    with c2:
+        st.metric(
+            "Best Performer",
+            best_row["Stock"],
+            f"{best_row['Return %']:.2f}%",
+        )
+
+    with c3:
+        st.metric(
+            "Average Return",
+            f"{avg_return:.2f}%",
+        )
+
+    with c4:
+        st.metric(
+            "Average Daily Volatility",
+            f"{avg_volatility:.2f}%",
+        )
+
+    st.markdown("---")
+
+    # Performance chart
+    st.subheader("📊 Stock Performance")
+
+    chart_df = comparison.sort_values(
+        "Return %",
+        ascending=False,
+    )
+
+    fig = px.bar(
+        chart_df,
+        x="Stock",
+        y="Return %",
+        text="Return %",
+        title="First-to-Last Price Return",
+    )
+
+    fig.update_traces(
+        texttemplate="%{text:.2f}%",
+        textposition="outside",
+    )
+
+    fig.update_layout(
+        height=450,
+        xaxis_title="Stock",
+        yaxis_title="Return (%)",
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+    st.subheader("📋 Performance Ranking")
+
+    display_df = comparison.copy()
+
+    for col in [
+        "Start Price",
+        "Latest Price",
+        "High",
+        "Low",
+    ]:
+        display_df[col] = display_df[col].round(2)
+
+    display_df["Return %"] = display_df[
+        "Return %"
+    ].round(2)
+
+    display_df["Volatility %"] = display_df[
+        "Volatility %"
+    ].round(2)
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("---")
+
+    st.subheader("💡 Business Insights")
+
+    best = best_row["Stock"]
+    worst = worst_row["Stock"]
+
+    st.markdown(
+        f"""
+        <div class="insight-box">
+            <b>🏆 Strongest performer:</b>
+            {best} generated the highest first-to-last price return
+            among the six analyzed stocks.
+        </div>
+
+        <div class="insight-box">
+            <b>📉 Weakest performer:</b>
+            {worst} generated the lowest first-to-last return.
+        </div>
+
+        <div class="insight-box">
+            <b>⚠️ Risk consideration:</b>
+            Daily-return volatility should be considered alongside
+            absolute returns when evaluating performance.
+        </div>
+
+        <div class="insight-box">
+            <b>📌 Strategy note:</b>
+            Moving-average crossover signals are trend-following
+            indicators and should not be treated as standalone
+            investment recommendations.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# STOCK ANALYSIS
+# ============================================================
+
+elif page == "Stock Analysis":
+
+    st.subheader("🔎 Individual Stock Analysis")
+
+    selected_stock = st.selectbox(
+        "Select Stock",
+        STOCK_LIST,
+        format_func=lambda x: STOCKS[x],
+    )
+
+    df = prepare_stock_data(
+        selected_stock
+    )
+
+    latest = df.iloc[-1]
+
+    latest_price = latest["close_price"]
+    previous_price = (
+        df["close_price"].iloc[-2]
+        if len(df) > 1
+        else latest_price
+    )
+
+    daily_change = (
+        (latest_price / previous_price) - 1
+    ) * 100
+
+    total_return = (
+        (
+            latest_price
+            / df["close_price"].iloc[0]
+        )
+        - 1
+    ) * 100
+
+    buy_count = int(
+        (df["Signal"] == "Buy").sum()
+    )
+
+    sell_count = int(
+        (df["Signal"] == "Sell").sum()
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        st.metric(
+            "Latest Close",
+            f"{latest_price:,.2f}",
+        )
+
+    with c2:
+        st.metric(
+            "Daily Change",
+            f"{daily_change:.2f}%",
+        )
+
+    with c3:
+        st.metric(
+            "Total Return",
+            f"{total_return:.2f}%",
+        )
+
+    with c4:
+        st.metric(
+            "Latest Signal",
+            latest["Signal"],
+        )
+
+    st.markdown("---")
+
+    # Price chart
+    st.subheader(
+        f"📈 {STOCKS[selected_stock]} Price & Moving Averages"
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["close_price"],
+            mode="lines",
+            name="Close Price",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["MA20"],
+            mode="lines",
+            name="MA20",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df["date"],
+            y=df["MA50"],
+            mode="lines",
+            name="MA50",
+        )
+    )
+
+    buy_df = df[
+        df["Signal"] == "Buy"
+    ]
+
+    sell_df = df[
+        df["Signal"] == "Sell"
+    ]
+
+    fig.add_trace(
+        go.Scatter(
+            x=buy_df["date"],
+            y=buy_df["close_price"],
+            mode="markers",
+            name="Buy",
+            marker=dict(
+                size=10,
+                symbol="triangle-up",
+            ),
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=sell_df["date"],
+            y=sell_df["close_price"],
+            mode="markers",
+            name="Sell",
+            marker=dict(
+                size=10,
+                symbol="triangle-down",
+            ),
+        )
+    )
+
+    fig.update_layout(
+        height=600,
+        hovermode="x unified",
+        xaxis_title="Date",
+        yaxis_title="Price",
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+    # Recent data
+    st.subheader("📋 Recent Price Data")
+
+    recent = df[
+        [
+            "date",
+            "close_price",
+            "MA20",
+            "MA50",
+            "Daily Return %",
+            "Signal",
+        ]
+    ].tail(20).copy()
+
+    recent["close_price"] = recent[
+        "close_price"
+    ].round(2)
+
+    recent["MA20"] = recent[
+        "MA20"
+    ].round(2)
+
+    recent["MA50"] = recent[
+        "MA50"
+    ].round(2)
+
+    recent["Daily Return %"] = recent[
+        "Daily Return %"
+    ].round(2)
+
+    st.dataframe(
+        recent.sort_values(
+            "date",
+            ascending=False,
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Trading activity
+    st.subheader("📊 Trading Activity")
+
+    activity_columns = []
+
+    for col in [
+        "no.of_shares",
+        "no._of_trades",
+        "total_turnover_(rs.)",
+    ]:
+        if col in df.columns:
+            activity_columns.append(col)
+
+    if activity_columns:
+
+        activity = df[
+            ["date"] + activity_columns
+        ].tail(100)
+
+        fig_activity = px.line(
+            activity,
+            x="date",
+            y=activity_columns,
+            title="Recent Trading Activity",
+        )
+
+        fig_activity.update_layout(
+            height=450,
+            hovermode="x unified",
+        )
+
+        st.plotly_chart(
+            fig_activity,
+            use_container_width=True,
+        )
+
+    # Returns
+    st.subheader("📉 Daily Returns")
+
+    returns = df[
+        ["date", "Daily Return %"]
+    ].dropna()
+
+    fig_returns = px.line(
+        returns,
+        x="date",
+        y="Daily Return %",
+        title="Daily Percentage Returns",
+    )
+
+    fig_returns.update_layout(
+        height=400,
+        xaxis_title="Date",
+        yaxis_title="Daily Return (%)",
+    )
+
+    st.plotly_chart(
+        fig_returns,
+        use_container_width=True,
+    )
+
+    # Recommendations
+    st.subheader("💡 Analytical Recommendation")
+
+    if latest["Signal"] == "Buy":
+        message = (
+            "The latest moving-average crossover is bullish. "
+            "The short-term MA20 is above MA50 and a recent "
+            "golden-cross signal was detected."
+        )
+
+    elif latest["Signal"] == "Sell":
+        message = (
+            "The latest moving-average crossover is bearish. "
+            "The short-term MA20 is below MA50 and a recent "
+            "death-cross signal was detected."
+        )
+
+    else:
+        message = (
+            "There is currently no fresh crossover signal. "
+            "The moving-average strategy is in a holding state."
+        )
+
+    st.info(message)
+
+    st.caption(
+        "This is an analytical dashboard, not financial advice."
+    )
+
+
+# ============================================================
+# CROSS STOCK INSIGHTS
+# ============================================================
+
+elif page == "Cross-Stock Insights":
+
+    st.subheader("🏆 Cross-Stock Comparison")
+
+    comparison_chart = comparison.sort_values(
+        "Return %",
+        ascending=False,
+    )
+
+    fig = px.bar(
+        comparison_chart,
+        x="Stock",
+        y="Return %",
+        color="Volatility %",
+        text="Return %",
+        title="Return vs Volatility",
+    )
+
+    fig.update_traces(
+        texttemplate="%{text:.2f}%",
+        textposition="outside",
+    )
+
+    fig.update_layout(
+        height=500,
+        xaxis_title="Stock",
+        yaxis_title="Return (%)",
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+    st.subheader("📊 Risk vs Return")
+
+    fig_scatter = px.scatter(
+        comparison,
+        x="Volatility %",
+        y="Return %",
+        text="Stock",
+        size="Latest Price",
+        title="Risk vs Return",
+    )
+
+    fig_scatter.update_traces(
+        textposition="top center"
+    )
+
+    fig_scatter.update_layout(
+        height=500,
+        xaxis_title="Daily Volatility (%)",
+        yaxis_title="Total Return (%)",
+    )
+
+    st.plotly_chart(
+        fig_scatter,
+        use_container_width=True,
+    )
+
+    st.subheader("📋 Comparison Table")
+
+    st.dataframe(
+        comparison.round(2),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("🎯 Signal Activity")
+
+    signal_summary = []
+
+    for table, name in STOCKS.items():
+
+        df = prepare_stock_data(table)
+
+        signal_summary.append(
+            {
+                "Stock": name,
+                "Buy Signals": int(
+                    (df["Signal"] == "Buy").sum()
+                ),
+                "Sell Signals": int(
+                    (df["Signal"] == "Sell").sum()
+                ),
+                "Hold Days": int(
+                    (df["Signal"] == "Hold").sum()
+                ),
+            }
+        )
+
+    signal_df = pd.DataFrame(
+        signal_summary
+    )
+
+    st.dataframe(
+        signal_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    fig_signal = px.bar(
+        signal_df,
+        x="Stock",
+        y=[
+            "Buy Signals",
+            "Sell Signals",
+        ],
+        barmode="group",
+        title="Buy vs Sell Signals",
+    )
+
+    fig_signal.update_layout(
+        height=450,
+    )
+
+    st.plotly_chart(
+        fig_signal,
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# SQL TASKS
+# ============================================================
+
 elif page == "SQL Tasks":
-    page_header("SQL Analysis Tasks", "All 13 validated SQL tasks executed directly against the SQLite database.")
 
-    task = st.selectbox("Select SQL Task", list(TASKS.keys()))
-    sql = TASKS[task]
-    st.code(sql, language="sql")
+    st.subheader("🧮 SQL Analysis Tasks")
 
-    try:
-        result = run_sql(sql)
-        st.success(f"Query executed successfully — {len(result):,} rows returned.")
-        st.dataframe(result, use_container_width=True, hide_index=True)
-        st.download_button("⬇ Download SQL Result", result.to_csv(index=False),
-                           "sql_task_result.csv", "text/csv")
-    except Exception as e:
-        st.error(f"SQL execution error: {e}")
+    task = st.selectbox(
+        "Select Analysis Task",
+        [
+            "Task 1 — Stock Overview",
+            "Task 2 — Eicher Top 5 Closing Prices",
+            "Task 3 — TCS Yearly Average Close",
+            "Task 4 — NULL Deliverable Quantity",
+            "Task 5 — 20/50 Day Moving Averages",
+            "Task 6 — Master Table",
+            "Task 7 — Buy/Sell/Hold Signals",
+            "Task 8 — Signal Counts",
+            "Task 9 — Signal on 2018-06-21",
+            "Task 10 — Signals Across All Stocks",
+            "Task 11 — First-to-Last Return",
+            "Task 12 — Worst Daily Drops",
+            "Task 13 — Corporate Action Analysis",
+        ],
+    )
 
-# =========================================================
+    task_functions = {
+        "Task 1 — Stock Overview": task_1,
+        "Task 2 — Eicher Top 5 Closing Prices": task_2,
+        "Task 3 — TCS Yearly Average Close": task_3,
+        "Task 4 — NULL Deliverable Quantity": task_4,
+        "Task 5 — 20/50 Day Moving Averages": task_5,
+        "Task 6 — Master Table": task_6,
+        "Task 7 — Buy/Sell/Hold Signals": task_7,
+        "Task 8 — Signal Counts": task_8,
+        "Task 9 — Signal on 2018-06-21": task_9,
+        "Task 10 — Signals Across All Stocks": task_10,
+        "Task 11 — First-to-Last Return": task_11,
+        "Task 12 — Worst Daily Drops": task_12,
+        "Task 13 — Corporate Action Analysis": task_13,
+    }
+
+    result = task_functions[task]()
+
+    st.dataframe(
+        result,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    csv_data = result.to_csv(
+        index=False
+    ).encode("utf-8")
+
+    st.download_button(
+        "⬇️ Download Result",
+        csv_data,
+        file_name="sql_task_result.csv",
+        mime="text/csv",
+    )
+
+
+# ============================================================
 # SQL PLAYGROUND
-# =========================================================
-elif page == "SQL Playground":
-    page_header("SQL Playground", "Explore the stock database using custom SQL queries.")
+# ============================================================
 
-    default_sql = """SELECT
+elif page == "SQL Playground":
+
+    st.subheader("🧑‍💻 SQL Playground")
+
+    st.caption(
+        "Run read-only SQL queries against the SQLite database."
+    )
+
+    default_query = """
+SELECT
     date,
     close_price
 FROM bajaj_auto
 ORDER BY date DESC
-LIMIT 20;"""
-    query = st.text_area("SQL Query", value=default_sql, height=230)
+LIMIT 20;
+""".strip()
 
-    if st.button("▶ Run SQL", type="primary"):
-        try:
-            result = run_sql(query)
-            st.success(f"Query executed successfully — {len(result):,} rows returned.")
-            st.dataframe(result, use_container_width=True, hide_index=True)
-            st.download_button("⬇ Download Query Result", result.to_csv(index=False),
-                               "sql_query_result.csv", "text/csv")
-        except Exception as e:
-            st.error(f"SQL Error: {e}")
+    query = st.text_area(
+        "SQL Query",
+        value=default_query,
+        height=180,
+    )
 
-    section("Database Tables")
-    rows = []
-    for table, label in STOCKS.items():
-        d = load_data(table)
-        rows.append({"Table": table, "Stock": label, "Rows": len(d), "Columns": len(d.columns),
-                     "Start": d["date"].min().strftime("%Y-%m-%d"),
-                     "End": d["date"].max().strftime("%Y-%m-%d")})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    if st.button(
+        "▶ Run Query",
+        type="primary",
+    ):
 
-# =========================================================
+        cleaned_query = query.strip().lower()
+
+        blocked = [
+            "drop ",
+            "delete ",
+            "update ",
+            "insert ",
+            "alter ",
+            "replace ",
+            "create ",
+            "attach ",
+            "detach ",
+        ]
+
+        if any(
+            word in cleaned_query
+            for word in blocked
+        ):
+            st.error(
+                "Only read-only SELECT queries are allowed."
+            )
+
+        elif not (
+            cleaned_query.startswith("select")
+            or cleaned_query.startswith("with")
+            or cleaned_query.startswith("pragma")
+        ):
+            st.error(
+                "Please enter a SELECT, WITH, or PRAGMA query."
+            )
+
+        else:
+            try:
+                result = run_sql(query)
+
+                st.success(
+                    f"Query executed successfully — "
+                    f"{len(result):,} rows returned."
+                )
+
+                st.dataframe(
+                    result,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            except Exception as e:
+                st.error(
+                    f"SQL Error: {e}"
+                )
+
+
+# ============================================================
 # DATA EXPLORER
-# =========================================================
+# ============================================================
+
 elif page == "Data Explorer":
-    page_header("Data Explorer", "Explore the cleaned datasets stored in SQLite.")
 
-    selected = st.selectbox("Select Dataset", list(STOCKS.keys()), format_func=lambda x: STOCKS[x])
-    df = load_data(selected)
+    st.subheader("🗃️ Data Explorer")
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: metric_card("Rows", f"{len(df):,}")
-    with c2: metric_card("Columns", f"{len(df.columns):,}")
-    with c3: metric_card("Missing Values", f"{df.isna().sum().sum():,}")
-    with c4: metric_card("Date Range", f"{df['date'].min().year}–{df['date'].max().year}")
+    selected_table = st.selectbox(
+        "Select Table",
+        STOCK_LIST,
+        format_func=lambda x: STOCKS[x],
+    )
 
-    section("Dataset Preview")
-    st.dataframe(df, use_container_width=True, height=620, hide_index=True)
-    st.download_button("⬇ Download Dataset", df.to_csv(index=False),
-                       f"{selected}_data.csv", "text/csv")
+    df = load_data(
+        selected_table
+    )
 
-    section("Data Quality Summary")
-    quality = pd.DataFrame({
-        "Column": df.columns,
-        "Data Type": [str(t) for t in df.dtypes],
-        "Missing Values": [int(df[c].isna().sum()) for c in df.columns],
-        "Unique Values": [int(df[c].nunique()) for c in df.columns],
-    })
-    st.dataframe(quality, use_container_width=True, hide_index=True)
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric(
+            "Rows",
+            f"{len(df):,}",
+        )
+
+    with c2:
+        st.metric(
+            "Columns",
+            f"{len(df.columns):,}",
+        )
+
+    with c3:
+        missing = int(
+            df.isna().sum().sum()
+        )
+
+        st.metric(
+            "Missing Values",
+            f"{missing:,}",
+        )
+
+    st.markdown("---")
+
+    st.subheader("📋 Dataset Preview")
+
+    st.dataframe(
+        df.tail(100),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("🔍 Column Information")
+
+    info = pd.DataFrame(
+        {
+            "Column": df.columns,
+            "Data Type": [
+                str(dtype)
+                for dtype in df.dtypes
+            ],
+            "Missing Values": [
+                int(df[col].isna().sum())
+                for col in df.columns
+            ],
+            "Unique Values": [
+                int(df[col].nunique())
+                for col in df.columns
+            ],
+        }
+    )
+
+    st.dataframe(
+        info,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("📊 Numeric Summary")
+
+    numeric_df = df.select_dtypes(
+        include=np.number
+    )
+
+    if not numeric_df.empty:
+        st.dataframe(
+            numeric_df.describe().T.round(2),
+            use_container_width=True,
+        )
+
+    st.download_button(
+        "⬇️ Download Current Dataset",
+        df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{selected_table}.csv",
+        mime="text/csv",
+    )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.markdown("---")
+
+st.caption(
+    "SQL Stock Market Analytics • Built with Python, SQL, Pandas, Plotly and Streamlit"
+)
+
+st.caption(
+    "Historical analysis only — not financial advice."
+)
+
+
+   
